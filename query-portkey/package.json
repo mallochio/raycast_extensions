@@ -1,0 +1,71 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "query-portkey",
+  "title": "Query Portkey",
+  "description": "Queries Portkey LLM gateway",
+  "icon": "portkey.webp",
+  "author": "mallochio",
+  "license": "MIT",
+  "commands": [
+    {
+      "name": "query-portkey",
+      "title": "Query Portkey",
+      "description": "Queries LLMs using the portkey API",
+      "mode": "view"
+    }
+  ],
+  "dependencies": {
+    "@raycast/api": "^1.93.1",
+    "@raycast/utils": "^1.17.0",
+    "node-fetch": "^2.7.0",
+    "portkey-ai": "^1.7.1"
+  },
+  "devDependencies": {
+    "@raycast/eslint-config": "^1.0.11",
+    "@types/node": "20.8.10",
+    "@types/react": "18.3.3",
+    "eslint": "^8.57.0",
+    "prettier": "^3.3.3",
+    "typescript": "^5.4.5"
+  },
+  "scripts": {
+    "build": "ray build",
+    "dev": "ray develop",
+    "fix-lint": "ray lint --fix",
+    "lint": "ray lint",
+    "prepublishOnly": "echo \"\\n\\nIt seems like you are trying to publish the Raycast extension to npm.\\n\\nIf you did intend to publish it to npm, remove the \\`prepublishOnly\\` script and rerun \\`npm publish\\` again.\\nIf you wanted to publish it to the Raycast Store instead, use \\`npm run publish\\` instead.\\n\\n\" && exit 1",
+    "publish": "npx @raycast/api@latest publish"
+  },
+  "preferences": [
+    {
+      "name": "apiKey",
+      "title": "Portkey API Key",
+      "description": "Your Portkey API Key",
+      "type": "password",
+      "required": true
+    },
+    {
+      "name": "virtualKey",
+      "title": "Portkey Virtual Key",
+      "description": "Your Portkey Virtual Key",
+      "type": "textfield",
+      "required": true
+    },
+    {
+      "name": "defaultModel",
+      "title": "Default Model",
+      "description": "The default LLM model to use",
+      "type": "textfield",
+      "default": "gemini-2.0-flash-thinking-exp-01-21",
+      "required": false
+    },
+    {
+      "name": "defaultSystemPrompt",
+      "title": "Default System Prompt",
+      "description": "Default instructions for the AI model",
+      "type": "textfield",
+      "default": "Please use plain text and paragraphs, without markdown or HTML formatting.",
+      "required": false
+    }
+  ]
+}
