@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { Form, ActionPanel, Action, Detail, showToast, Toast, getPreferenceValues, useNavigation } from "@raycast/api";
 import fetch from "node-fetch";
+import { Readable } from "stream";
+import { ReadableStream } from "stream/web";
 
 // Preferences interface
 interface Preferences {
@@ -78,7 +80,7 @@ export default function QueryForm() {
         title: "Querying Portkey",
         message: `Using model: ${newModel}`,
       });
-
+  
       // Prepare full conversation history for API
       const apiMessages: Message[] = [];
       
@@ -89,7 +91,11 @@ export default function QueryForm() {
       
       // Add all conversation messages
       apiMessages.push(...updatedMessages);
-
+  
+      // Initialize AI's response message
+      const aiMessage: Message = { role: "assistant", content: "" };
+      setMessages([...updatedMessages, aiMessage]);
+  
       // Use node-fetch to call the API
       const response = await fetch("https://api.portkey.ai/v1/chat/completions", {
         method: "POST",
@@ -104,7 +110,7 @@ export default function QueryForm() {
           max_tokens: 32768,
           temperature: 0.95,
           top_p: 0.9,
-          stream: false,
+          stream: true,
           tools: [
             {
               type: "function",
@@ -115,29 +121,85 @@ export default function QueryForm() {
           ]
         })
       });
-
-      // Parse response
-      const data = await response.json() as any;
-      
+  
       if (!response.ok) {
-        throw new Error(data.error?.message || `API error: ${response.status}`);
+        const errorText = await response.text();
+        throw new Error(errorText || `API error: ${response.status}`);
       }
       
-      // Process response
-      const answer = data.choices?.[0]?.message?.content || "No response content available";
+      if (!response.body) {
+        throw new Error("Response body is null");
+      }
+      // Convert node-fetch response body to web ReadableStream
+      const webReadableStream = Readable.toWeb(response.body as any) as ReadableStream;
+      const reader = webReadableStream.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let cumulativeContent = "";
+      let finalTokenCount = 0;
+  
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          
+          if (done) {
+            break;
+          }
+          
+          // Decode the chunk and split by lines
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split("\n").filter(line => line.trim() !== "");
+          
+          for (const line of lines) {
+            // Skip if not a data line
+            if (!line.startsWith("data: ")) continue;
+            
+            // Extract the JSON string
+            const jsonString = line.slice(6); // Remove "data: " prefix
+            
+            // Check for the end of stream marker
+            if (jsonString.trim() === "[DONE]") continue;
+            
+            try {
+              const parsedData = JSON.parse(jsonString);
+              
+              // Extract content from delta if available
+              const deltaContent = parsedData.choices?.[0]?.delta?.content || "";
+              if (deltaContent) {
+                cumulativeContent += deltaContent;
+                
+                // Update the AI message with new content
+                const updatedAiMessage = { ...aiMessage, content: cumulativeContent };
+                setMessages([...updatedMessages, updatedAiMessage]);
+              }
+              
+              // Check for token usage
+              if (parsedData.usage?.total_tokens) {
+                finalTokenCount = parsedData.usage.total_tokens;
+              }
+            } catch (error) {
+              console.error("Error parsing JSON from stream:", error, jsonString);
+            }
+          }
+        }
+      } catch (error) {
+        console.error("Error reading stream:", error);
+        throw error;
+      } finally {
+        reader.releaseLock();
+      }
       
-      // Add AI's response to conversation
-      const aiMessage: Message = { role: "assistant", content: answer };
-      setMessages([...updatedMessages, aiMessage]);
-
-      // Update token count if available
-      if (data.usage?.total_tokens) {
-        setTokenCount(prev => prev + data.usage.total_tokens);
+      // Update token count after stream is complete
+      if (finalTokenCount > 0) {
+        setTokenCount(prev => prev + finalTokenCount);
+      } else {
+        // If no token count was provided in the stream, estimate it
+        // This is just a fallback and might not be accurate
+        setTokenCount(prev => prev + Math.ceil(cumulativeContent.length / 4));
       }
       
       await showToast({
         style: Toast.Style.Success,
-        title: "Response received",
+        title: "Response complete",
       });
       
     } catch (error) {
