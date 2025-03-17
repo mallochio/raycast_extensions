@@ -96,6 +96,30 @@ export default function QueryForm() {
       const aiMessage: Message = { role: "assistant", content: "" };
       setMessages([...updatedMessages, aiMessage]);
   
+      // Prepare request payload based on model
+      const requestPayload = {
+        model: newModel,
+        messages: apiMessages,
+        max_tokens: 32768,
+        temperature: 0.95,
+        top_p: 0.9,
+        stream: true
+      };
+      
+      // Only add tools for Gemini 2.0 models
+      if (newModel.startsWith("gemini-2.0")) {
+        Object.assign(requestPayload, {
+          tools: [
+            {
+              type: "function",
+              function: {
+                name: "google_search"
+              }
+            }
+          ]
+        });
+      }
+  
       // Use node-fetch to call the API
       const response = await fetch("https://api.portkey.ai/v1/chat/completions", {
         method: "POST",
@@ -104,22 +128,7 @@ export default function QueryForm() {
           "x-portkey-api-key": preferences.apiKey,
           "x-portkey-virtual-key": preferences.virtualKey
         },
-        body: JSON.stringify({
-          model: newModel,
-          messages: apiMessages,
-          max_tokens: 32768,
-          temperature: 0.95,
-          top_p: 0.9,
-          stream: true,
-          tools: [
-            {
-              type: "function",
-              function: {
-                name: "google_search",
-              }
-            }
-          ]
-        })
+        body: JSON.stringify(requestPayload)
       });
   
       if (!response.ok) {
