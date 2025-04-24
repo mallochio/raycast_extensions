@@ -84,7 +84,12 @@ function MessageInputForm(props: { onSubmit: (query: string) => void }) {
     <Form
       actions={
         <ActionPanel>
-          <Action.SubmitForm onSubmit={(values: { query: string }) => { props.onSubmit(values.query); pop(); }} />
+          <Action.SubmitForm
+            onSubmit={(values: { query: string }) => {
+              props.onSubmit(values.query);
+              pop();
+            }}
+          />
         </ActionPanel>
       }
     >
@@ -101,32 +106,30 @@ export default function QueryForm() {
   const [model, setModel] = useState<string>(preferences.defaultModel || "");
   const [inputValue, setInputValue] = useState("");
   const [tokenCount, setTokenCount] = useState(0);
-  const [groundingSources, setGroundingSources] = useState<{[index: number]: GroundingChunk}>({});
+  const [groundingSources, setGroundingSources] = useState<{ [index: number]: GroundingChunk }>({});
   const [searchQueries, setSearchQueries] = useState<string[]>([]);
+  const [streamUpdate, setStreamUpdate] = useState(0);
 
   // Format messages for display in markdown, including grounding information
   const getFormattedConversation = () => {
     return messages
-      .filter(msg => msg.role !== "system")
-      .map(msg => {
+      .filter((msg) => msg.role !== "system")
+      .map((msg) => {
         // User messages remain simple
         if (msg.role === "user") {
           return `### User\n\n${msg.content.trim()}\n\n---`;
         }
-        
         // For assistant messages, format with better visual hierarchy
         const modelName = model || preferences.defaultModel;
         const content = msg.content.trim();
         let formattedMessage = `### ${modelName} (Token Tally: ${tokenCount})\n\n${content}`;
         if (searchQueries.length > 0) {
-          formattedMessage += "\n\n> **Searched for:** " + 
-            searchQueries.map(q => `"${q}"`).join(", ");
+          formattedMessage += "\n\n> **Searched for:** " + searchQueries.map((q) => `"${q}"`).join(", ");
         }
         if (Object.keys(groundingSources).length > 0) {
           const sourcesList = Object.values(groundingSources)
-            .map((source, index) => source.web
-              ? `[${source.web.title || "Source " + (index + 1)}](${source.web.uri})`
-              : ""
+            .map((source, index) =>
+              source.web ? `[${source.web.title || "Source " + (index + 1)}](${source.web.uri})` : ""
             )
             .filter(Boolean)
             .join(", ");
@@ -139,57 +142,57 @@ export default function QueryForm() {
 
   async function handleSubmit(query: string) {
     if (!query?.trim()) return;
-    
+
     try {
       setIsLoading(true);
       setInputValue("");
-      
+
       const newModel = model || preferences.defaultModel || "gemini-2.0-flash";
       const newSystemPrompt = systemPrompt || preferences.defaultSystemPrompt;
-      
+
       // Add user message to conversation
       const userMessage: Message = { role: "user", content: query };
       const updatedMessages = [...messages, userMessage];
       setMessages(updatedMessages);
-      
+
       // Show toast indicating query is in progress
       await showToast({
         style: Toast.Style.Animated,
         title: "Querying Gemini",
         message: `Using model: ${newModel}`,
       });
-  
+
       // Convert Raycast messages to Gemini format
       const geminiContents: GeminiContent[] = [];
-      
+
       // Add system prompt if available
       if (newSystemPrompt) {
         geminiContents.push({
           role: "user",
-          parts: [{ text: newSystemPrompt }]
+          parts: [{ text: newSystemPrompt }],
         });
-        
+
         // Add a placeholder assistant response after system prompt
         geminiContents.push({
           role: "model",
-          parts: [{ text: "I'll follow those instructions." }]
+          parts: [{ text: "I'll follow those instructions." }],
         });
       }
-      
+
       // Add conversation messages
-      updatedMessages.forEach(msg => {
+      updatedMessages.forEach((msg) => {
         if (msg.role === "system") return;
-        
+
         geminiContents.push({
           role: msg.role === "user" ? "user" : "model",
-          parts: [{ text: msg.content }]
+          parts: [{ text: msg.content }],
         });
       });
-      
+
       // Initialize AI's response message
       const aiMessage: Message = { role: "assistant", content: "" };
       setMessages([...updatedMessages, aiMessage]);
-  
+
       // Prepare request payload
       const requestPayload: any = {
         contents: geminiContents,
@@ -197,59 +200,58 @@ export default function QueryForm() {
           temperature: 0.9,
           topP: 0.95,
           maxOutputTokens: 32768,
-        }
+          "thinkingConfig": {
+            "thinkingBudget": 24576
+          }
+        },
       };
-      
+ 
       // Add Google Search tool if using Gemini 2.0
-      if (newModel.startsWith("gemini-2.0")) {
+      if (newModel.startsWith("gemini-2.5")) {
         requestPayload.tools = [{ google_search: {} }];
       }
-  
-      // Let's try the non-streaming endpoint first and fall back if needed
+
+      // Use non-streaming request exclusively
       try {
-        // First attempt with regular non-streaming endpoint
-        console.log("Attempting non-streaming request...");
+        console.log("Using non-streaming request exclusively...");
         const response = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/${newModel}:generateContent?key=${preferences.apiKey}`,
           {
             method: "POST",
             headers: {
-              "Content-Type": "application/json"
+              "Content-Type": "application/json",
             },
-            body: JSON.stringify(requestPayload)
+            body: JSON.stringify(requestPayload),
           }
         );
-  
+
         if (!response.ok) {
           const errorText = await response.text();
           throw new Error(errorText || `API error: ${response.status}`);
         }
-        
-        const responseData: GeminiResponse = await response.json() as GeminiResponse;
-        
+
+        const responseData: GeminiResponse = (await response.json()) as GeminiResponse;
+
         if (!responseData.candidates || responseData.candidates.length === 0) {
           throw new Error("No response from Gemini");
         }
-        
+
         const candidate = responseData.candidates[0];
-        const responseText = candidate.content.parts.map(part => part.text).join("");
-        
+        const responseText = candidate.content.parts.map((part) => part.text).join("");
+
         // Update AI message with the response
         const updatedAiMessage = { ...aiMessage, content: responseText };
         setMessages([...updatedMessages, updatedAiMessage]);
-        
+
         // Extract grounding information
         if (candidate.groundingMetadata) {
-          const sources: {[index: number]: GroundingChunk} = {};
-          
+          const sources: { [index: number]: GroundingChunk } = {};
           if (candidate.groundingMetadata.groundingChunks) {
             candidate.groundingMetadata.groundingChunks.forEach((chunk, index) => {
               sources[index] = chunk;
             });
           }
-          
           setGroundingSources(sources);
-          
           if (candidate.groundingMetadata.webSearchQueries) {
             setSearchQueries(candidate.groundingMetadata.webSearchQueries);
           } else {
@@ -259,152 +261,20 @@ export default function QueryForm() {
           setGroundingSources({});
           setSearchQueries([]);
         }
-        
+
         // Update token count
         if (responseData.usageMetadata) {
-          setTokenCount(prev => prev + responseData.usageMetadata.totalTokenCount);
+          setTokenCount((prev) => prev + responseData.usageMetadata.totalTokenCount);
         }
       } catch (error) {
         console.error("Error with non-streaming request:", error);
-        await showToast({
-          style: Toast.Style.Failure,
-          title: "Error with standard request, trying fallback",
-        });
-        
-        // If standard request fails, try the streaming endpoint as fallback
-        try {
-          console.log("Falling back to streaming request...");
-          // Reset the AI message content
-          const resetAiMessage = { ...aiMessage, content: "Loading response..." };
-          setMessages([...updatedMessages, resetAiMessage]);
-          
-          // Use node-fetch to call the streaming API
-          const streamingResponse = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/${newModel}:streamGenerateContent?key=${preferences.apiKey}`,
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json"
-              },
-              body: JSON.stringify(requestPayload)
-            }
-          );
-  
-          if (!streamingResponse.ok) {
-            const errorText = await streamingResponse.text();
-            throw new Error(errorText || `API error: ${streamingResponse.status}`);
-          }
-          
-          if (!streamingResponse.body) {
-            throw new Error("Response body is null");
-          }
-          
-          // Process the streaming response
-          const webReadableStream = Readable.toWeb(streamingResponse.body as any) as ReadableStream;
-          const reader = webReadableStream.getReader();
-          const decoder = new TextDecoder("utf-8");
-          let cumulativeContent = "";
-          let finalGroundingMetadata: GroundingMetadata | undefined;
-          let totalTokens = 0;
-  
-          try {
-            while (true) {
-              const { done, value } = await reader.read();
-              
-              if (done) {
-                break;
-              }
-              
-              // Decode the chunk and process
-              const chunk = decoder.decode(value, { stream: true });
-              console.log("Received chunk:", chunk);
-              
-              const lines = chunk.split("\n").filter(line => line.trim() !== "");
-              
-              for (const line of lines) {
-                // Skip if not a data line
-                if (!line.startsWith("data: ")) continue;
-                
-                // Extract the JSON string
-                const jsonString = line.slice(6); // Remove "data: " prefix
-                
-                // Check for the end of stream marker
-                if (jsonString.trim() === "[DONE]") continue;
-                
-                try {
-                  const parsedData = JSON.parse(jsonString);
-                  console.log("Parsed chunk data:", parsedData);
-                  
-                  // Extract content and update the message
-                  if (parsedData.candidates && parsedData.candidates[0]) {
-                    const candidate = parsedData.candidates[0];
-                    
-                    if (candidate.content && candidate.content.parts && candidate.content.parts.length > 0) {
-                      const deltaContent = candidate.content.parts[0].text || "";
-                      cumulativeContent += deltaContent;
-                      
-                      // Update the AI message with new content
-                      const updatedStreamingMessage = { ...aiMessage, content: cumulativeContent };
-                      setMessages([...updatedMessages, updatedStreamingMessage]);
-                    }
-                    
-                    // Capture grounding metadata if available
-                    if (candidate.groundingMetadata) {
-                      finalGroundingMetadata = candidate.groundingMetadata;
-                    }
-                  }
-                  
-                  // Track token usage
-                  if (parsedData.usageMetadata) {
-                    totalTokens += parsedData.usageMetadata.totalTokenCount || 0;
-                  }
-                } catch (error) {
-                  console.error("Error parsing JSON from stream:", error, jsonString);
-                }
-              }
-            }
-            
-            // After streaming is complete, update token count
-            if (totalTokens > 0) {
-              setTokenCount(prev => prev + totalTokens);
-            }
-            
-            // Extract grounding information after streaming is complete
-            if (finalGroundingMetadata) {
-              const sources: {[index: number]: GroundingChunk} = {};
-              
-              if (finalGroundingMetadata.groundingChunks) {
-                finalGroundingMetadata.groundingChunks.forEach((chunk, index) => {
-                  sources[index] = chunk;
-                });
-              }
-              
-              setGroundingSources(sources);
-              
-              if (finalGroundingMetadata.webSearchQueries) {
-                setSearchQueries(finalGroundingMetadata.webSearchQueries);
-              } else {
-                setSearchQueries([]);
-              }
-            }
-            
-          } catch (streamError) {
-            console.error("Error processing stream:", streamError);
-            throw streamError;
-          } finally {
-            reader.releaseLock();
-          }
-        } catch (streamingError) {
-          console.error("Both standard and streaming requests failed:", streamingError);
-          throw streamingError;
-        }
+        throw error;
       }
-      
+
       await showToast({
         style: Toast.Style.Success,
         title: "Response complete",
       });
-      
     } catch (error) {
       console.error("Error querying Gemini:", error);
       await showToast({
@@ -421,25 +291,22 @@ export default function QueryForm() {
   if (messages.length > 0) {
     return (
       <Detail
+        key={streamUpdate}
         markdown={getFormattedConversation()}
         isLoading={isLoading}
         navigationTitle="Conversation with Gemini"
         actions={
           <ActionPanel>
-            <Action.Push
-              title="Add Message"
-              target={<MessageInputForm onSubmit={handleSubmit} />}
-              shortcut={{ modifiers: ["cmd"], key: "return" }}
-            />
-            <Action 
-              title="New Conversation" 
+            <Action.Push title="Add Message" target={<MessageInputForm onSubmit={handleSubmit} />} shortcut={{ modifiers: ["cmd"], key: "return" }} />
+            <Action
+              title="New Conversation"
               onAction={() => {
                 setMessages([]);
                 setInputValue("");
                 setTokenCount(0);
                 setGroundingSources({});
                 setSearchQueries([]);
-              }} 
+              }}
               shortcut={{ modifiers: ["cmd"], key: "n" }}
             />
           </ActionPanel>
@@ -458,12 +325,7 @@ export default function QueryForm() {
         </ActionPanel>
       }
     >
-      <Form.TextArea
-        id="query"
-        title="Query"
-        placeholder="What would you like to ask?"
-        autoFocus
-      />
+      <Form.TextArea id="query" title="Query" placeholder="What would you like to ask?" autoFocus />
     </Form>
   );
 }
