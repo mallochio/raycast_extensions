@@ -1,8 +1,7 @@
 import React, { useState } from "react";
 import { Form, ActionPanel, Action, Detail, showToast, Toast, getPreferenceValues, useNavigation } from "@raycast/api";
 import fetch from "node-fetch";
-import { Readable } from "stream";
-import { ReadableStream } from "stream/web";
+import { GoogleGenAI } from "@google/genai";
 
 // Preferences interface
 interface Preferences {
@@ -13,6 +12,9 @@ interface Preferences {
 
 const preferences = getPreferenceValues<Preferences>();
 
+// Initialize Gemini SDK client (for 2.5 models)
+const geminiClient = new GoogleGenAI({ apiKey: preferences.apiKey });
+
 // Message type definition
 interface Message {
   role: "system" | "user" | "assistant";
@@ -22,6 +24,7 @@ interface Message {
 // Gemini specific types
 interface GeminiPart {
   text: string;
+  thought?: boolean;
 }
 
 interface GeminiContent {
@@ -80,6 +83,7 @@ interface GeminiResponse {
 // A new component for entering a message in a multi-turn conversation
 function MessageInputForm(props: { onSubmit: (query: string) => void }) {
   const { pop } = useNavigation();
+  const [inputValue, setInputValue] = useState<string>("");
   return (
     <Form
       actions={
@@ -93,7 +97,14 @@ function MessageInputForm(props: { onSubmit: (query: string) => void }) {
         </ActionPanel>
       }
     >
-      <Form.TextArea id="query" title="New Message" placeholder="Type your message here" autoFocus />
+      <Form.TextArea
+        id="query"
+        title="New Message"
+        placeholder="Type your message here"
+        autoFocus
+        value={inputValue}
+        onChange={setInputValue}
+      />
     </Form>
   );
 }
@@ -102,19 +113,19 @@ function MessageInputForm(props: { onSubmit: (query: string) => void }) {
 export default function QueryForm() {
   const [isLoading, setIsLoading] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [systemPrompt, setSystemPrompt] = useState<string>(preferences.defaultSystemPrompt || "");
-  const [model, setModel] = useState<string>(preferences.defaultModel || "");
+  const [systemPrompt] = useState<string>(preferences.defaultSystemPrompt || "");
+  const [model] = useState<string>(preferences.defaultModel || "");
   const [inputValue, setInputValue] = useState("");
   const [tokenCount, setTokenCount] = useState(0);
   const [groundingSources, setGroundingSources] = useState<{ [index: number]: GroundingChunk }>({});
   const [searchQueries, setSearchQueries] = useState<string[]>([]);
-  const [streamUpdate, setStreamUpdate] = useState(0);
+  const [thinkingTraces, setThinkingTraces] = useState<string[]>([]);
 
-  // Format messages for display in markdown, including grounding information
+  // Format messages for display in markdown, including grounding information and collapsible thinking traces
   const getFormattedConversation = () => {
     return messages
       .filter((msg) => msg.role !== "system")
-      .map((msg) => {
+      .map((msg, idx) => {
         // User messages remain simple
         if (msg.role === "user") {
           return `### User\n\n${msg.content.trim()}\n\n---`;
@@ -122,14 +133,22 @@ export default function QueryForm() {
         // For assistant messages, format with better visual hierarchy
         const modelName = model || preferences.defaultModel;
         const content = msg.content.trim();
-        let formattedMessage = `### ${modelName} (Token Tally: ${tokenCount})\n\n${content}`;
+        let formattedMessage = `### ${modelName} (Token Tally: ${tokenCount})\n\n`;
+
+        // Always-visible thinking trace as blockquote (no heading)
+        if (thinkingTraces[idx]) {
+          formattedMessage += `> ${thinkingTraces[idx].replace(/\n/g, "\n> ")}\n\n`;
+        }
+
+        formattedMessage += content;
+
         if (searchQueries.length > 0) {
           formattedMessage += "\n\n> **Searched for:** " + searchQueries.map((q) => `"${q}"`).join(", ");
         }
         if (Object.keys(groundingSources).length > 0) {
           const sourcesList = Object.values(groundingSources)
             .map((source, index) =>
-              source.web ? `[${source.web.title || "Source " + (index + 1)}](${source.web.uri})` : ""
+              source.web ? `[${source.web.title || "Source " + (index + 1)}](${source.web.uri})` : "",
             )
             .filter(Boolean)
             .join(", ");
@@ -193,27 +212,127 @@ export default function QueryForm() {
       const aiMessage: Message = { role: "assistant", content: "" };
       setMessages([...updatedMessages, aiMessage]);
 
-      // Prepare request payload
-      const requestPayload: any = {
-        contents: geminiContents,
-        generationConfig: {
-          temperature: 0.9,
-          topP: 0.95,
-          maxOutputTokens: 32768,
-          "thinkingConfig": {
-            "thinkingBudget": 24576
-          }
-        },
-      };
- 
-      // Add Google Search tool if using Gemini 2.0
+      // SDK path for Gemini 2.5 models
       if (newModel.startsWith("gemini-2.5")) {
-        requestPayload.tools = [{ google_search: {} }];
+        try {
+          // Prepare the prompt as a string (Gemini 2.5 expects a string or array of strings)
+          const prompt: string[] = [];
+          if (systemPrompt) {
+            prompt.push(systemPrompt);
+          }
+          updatedMessages.forEach((msg) => {
+            if (msg.role === "user" || msg.role === "assistant") {
+              prompt.push(msg.content);
+            }
+          });
+
+          // Build the request for Gemini 2.5 with thinking and Google Search tool
+          const response = await geminiClient.models.generateContent({
+            model: newModel,
+            contents: prompt,
+            config: {
+              tools: [
+                {
+                  googleSearch: {},
+                  codeExecution: {},
+                },
+              ],
+              thinkingConfig: {
+                includeThoughts: true,
+                thinkingBudget: 24576,
+              },
+            },
+          });
+
+          // Parse the response for thought summary and answer
+          let thoughtSummary = "";
+          let answerText = "";
+          if (
+            response &&
+            response.candidates &&
+            response.candidates.length > 0 &&
+            response.candidates[0].content &&
+            response.candidates[0].content.parts
+          ) {
+            response.candidates[0].content.parts.forEach((part: any) => {
+              if (part.thought) {
+                thoughtSummary += part.text;
+              } else if (part.text) {
+                answerText += part.text;
+              }
+            });
+
+            // Compose assistant message content (answer only)
+            let responseText = answerText;
+
+            // Update AI message with the response
+            const updatedAiMessage = { ...aiMessage, content: responseText };
+            setMessages([...updatedMessages, updatedAiMessage]);
+
+            // Store thinking trace for this message index (collapsible)
+            setThinkingTraces((prev) => {
+              const arr = [...prev];
+              arr[updatedMessages.length] = thoughtSummary;
+              return arr;
+            });
+
+            // Extract grounding information if present
+            const candidate = response.candidates[0];
+            if (candidate.groundingMetadata) {
+              const sources: { [index: number]: GroundingChunk } = {};
+              if (candidate.groundingMetadata.groundingChunks) {
+                candidate.groundingMetadata.groundingChunks.forEach((chunk: any, index: number) => {
+                  sources[index] = chunk;
+                });
+              }
+              setGroundingSources(sources);
+              if (candidate.groundingMetadata.webSearchQueries) {
+                setSearchQueries(candidate.groundingMetadata.webSearchQueries);
+              } else {
+                setSearchQueries([]);
+              }
+            } else {
+              setGroundingSources({});
+              setSearchQueries([]);
+            }
+
+            // Update token count if available
+            setTokenCount(response.usageMetadata?.totalTokenCount || 0);
+          } else {
+            throw new Error("No response from Gemini");
+          }
+
+          setIsLoading(false);
+        } catch (err: any) {
+          setIsLoading(false);
+          // Print full error object to console for troubleshooting
+          // eslint-disable-next-line no-console
+          console.error("Gemini SDK error:", err);
+          await showToast({
+            style: Toast.Style.Failure,
+            title: "Error querying Gemini (SDK)",
+            message: err && err.message ? err.message : String(err),
+          });
+        }
+        return;
       }
 
-      // Use non-streaming request exclusively
+      // Fallback: REST API for non-2.5 models
       try {
-        console.log("Using non-streaming request exclusively...");
+        const requestPayload: any = {
+          contents: geminiContents,
+          generationConfig: {
+            temperature: 0.9,
+            topP: 0.95,
+            maxOutputTokens: 32768,
+          },
+        };
+
+        // Add Google Search tool if using Gemini 2.0
+        if (newModel.startsWith("gemini-2.0")) {
+          requestPayload.tools = [{ google_search: {} }];
+        }
+
         const response = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/${newModel}:generateContent?key=${preferences.apiKey}`,
           {
@@ -222,11 +341,14 @@ export default function QueryForm() {
               "Content-Type": "application/json",
             },
             body: JSON.stringify(requestPayload),
-          }
+          },
         );
 
         if (!response.ok) {
           const errorText = await response.text();
+          // Print full error object to console for troubleshooting
+          // eslint-disable-next-line no-console
+          console.error("Gemini REST error:", errorText);
           throw new Error(errorText || `API error: ${response.status}`);
         }
 
@@ -242,6 +364,13 @@ export default function QueryForm() {
         // Update AI message with the response
         const updatedAiMessage = { ...aiMessage, content: responseText };
         setMessages([...updatedMessages, updatedAiMessage]);
+
+        // Clear thinking traces for this message (not supported)
+        setThinkingTraces((prev) => {
+          const arr = [...prev];
+          arr[updatedMessages.length] = "";
+          return arr;
+        });
 
         // Extract grounding information
         if (candidate.groundingMetadata) {
@@ -263,27 +392,30 @@ export default function QueryForm() {
         }
 
         // Update token count
-        if (responseData.usageMetadata) {
-          setTokenCount((prev) => prev + responseData.usageMetadata.totalTokenCount);
-        }
-      } catch (error) {
-        console.error("Error with non-streaming request:", error);
-        throw error;
-      }
+        setTokenCount(responseData.usageMetadata?.totalTokenCount || 0);
 
-      await showToast({
-        style: Toast.Style.Success,
-        title: "Response complete",
-      });
-    } catch (error) {
-      console.error("Error querying Gemini:", error);
+        setIsLoading(false);
+      } catch (err: any) {
+        setIsLoading(false);
+        // Print full error object to console for troubleshooting
+        // eslint-disable-next-line no-console
+        console.error("Gemini REST error:", err);
+        await showToast({
+          style: Toast.Style.Failure,
+          title: "Error querying Gemini",
+          message: err && err.message ? err.message : String(err),
+        });
+      }
+    } catch (err: any) {
+      setIsLoading(false);
+      // Print full error object to console for troubleshooting
+      // eslint-disable-next-line no-console
+      console.error("General error:", err);
       await showToast({
         style: Toast.Style.Failure,
-        title: "Error querying Gemini",
-        message: error instanceof Error ? error.message : "Unknown error",
+        title: "Error",
+        message: err && err.message ? err.message : String(err),
       });
-    } finally {
-      setIsLoading(false);
     }
   }
 
@@ -291,13 +423,16 @@ export default function QueryForm() {
   if (messages.length > 0) {
     return (
       <Detail
-        key={streamUpdate}
         markdown={getFormattedConversation()}
         isLoading={isLoading}
         navigationTitle="Conversation with Gemini"
         actions={
           <ActionPanel>
-            <Action.Push title="Add Message" target={<MessageInputForm onSubmit={handleSubmit} />} shortcut={{ modifiers: ["cmd"], key: "return" }} />
+            <Action.Push
+              title="Add Message"
+              target={<MessageInputForm onSubmit={handleSubmit} />}
+              shortcut={{ modifiers: ["cmd"], key: "return" }}
+            />
             <Action
               title="New Conversation"
               onAction={() => {
@@ -325,7 +460,14 @@ export default function QueryForm() {
         </ActionPanel>
       }
     >
-      <Form.TextArea id="query" title="Query" placeholder="What would you like to ask?" autoFocus />
+      <Form.TextArea
+        id="query"
+        title="Query"
+        placeholder="What would you like to ask?"
+        autoFocus
+        value={inputValue}
+        onChange={setInputValue}
+      />
     </Form>
   );
 }
