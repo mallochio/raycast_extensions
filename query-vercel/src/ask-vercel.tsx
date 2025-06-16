@@ -15,7 +15,7 @@ import {
 import { streamText, StreamTextResult } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
-import { createGoogleGenerativeAI, GoogleGenerativeAIProviderOptions } from "@ai-sdk/google";
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
 
 // Custom error message handler
 const getErrorMessage = (error: unknown): string => {
@@ -86,12 +86,14 @@ export default function Command() {
         const looksLikeCode =
           content.includes("```") ||
           (content.includes("\n") && (content.includes(";") || content.includes("{") || content.includes("}")));
-        const formattedContent = looksLikeCode ? `
+        const formattedContent = looksLikeCode
+          ? `
 \`\`\`
 ${content.trim()}
 \`\`\`
-` : content;
-        return `**${icon} ${roleTitle}**: 
+`
+          : content;
+        return `**${icon} ${roleTitle}**:
 ${formattedContent}
 
 ---
@@ -134,7 +136,9 @@ ${formattedContent}
     let messagesForApi: Array<{ role: "user" | "assistant" | "system"; content: string }> = [
       ...messages,
       newUserMessage,
-    ].filter((msg): msg is Message & { role: "user" | "assistant" } => msg.role === "user" || msg.role === "assistant").map(({ role, content }) => ({ role, content }));
+    ]
+      .filter((msg): msg is Message & { role: "user" | "assistant" } => msg.role === "user" || msg.role === "assistant")
+      .map(({ role, content }) => ({ role, content }));
 
     const systemPrompt = preferences.systemPrompt?.trim();
     if (systemPrompt) {
@@ -269,66 +273,65 @@ ${formattedContent}
 
       await showToast({ style: Toast.Style.Success, title: "Response received" });
     } catch (err: any) {
-  console.error("API Error Caught:", err);
-  const errorMessage = err instanceof Error ? err.message : "An unknown error occurred";
+      console.error("API Error Caught:", err);
+      const errorMessage = err instanceof Error ? err.message : "An unknown error occurred";
 
-  // Enhanced error handling with retry logic
-  if (errorMessage.includes("API key is missing")) {
-    const detailedMessage = "API Key Missing: Please verify your API key is correctly set in Raycast preferences for the selected provider.";
-    console.error(detailedMessage);
-    await showToast({
-      style: Toast.Style.Failure,
-      title: "API Key Error",
-      message: detailedMessage,
-      primaryAction: {
-        title: "Open Preferences",
-        onAction: async () => {
-          await open("raycast://preferences");
-        },
-      },
-    });
-  } else if (errorMessage.includes("rate limit") || errorMessage.includes("too many requests")) {
-    const retryAfter = 5000; // 5 seconds
-    const detailedMessage = `Rate limit exceeded. Retrying after ${retryAfter/1000} seconds...`;
-    console.log(detailedMessage);
+      // Enhanced error handling with retry logic
+      if (errorMessage.includes("API key is missing")) {
+        const detailedMessage =
+          "API Key Missing: Please verify your API key is correctly set in Raycast preferences for the selected provider.";
+        console.error(detailedMessage);
+        await showToast({
+          style: Toast.Style.Failure,
+          title: "API Key Error",
+          message: detailedMessage,
+          primaryAction: {
+            title: "Open Preferences",
+            onAction: async () => {
+              await open("raycast://preferences");
+            },
+          },
+        });
+      } else if (errorMessage.includes("rate limit") || errorMessage.includes("too many requests")) {
+        const retryAfter = 5000; // 5 seconds
+        const detailedMessage = `Rate limit exceeded. Retrying after ${retryAfter / 1000} seconds...`;
+        console.log(detailedMessage);
 
-    await showToast({
-      style: Toast.Style.Animated,
-      title: "Rate Limit Exceeded",
-      message: detailedMessage,
-    });
+        await showToast({
+          style: Toast.Style.Animated,
+          title: "Rate Limit Exceeded",
+          message: detailedMessage,
+        });
 
-    // Retry after delay
-    await new Promise(resolve => setTimeout(resolve, retryAfter));
-    return handleSubmit(query); // Retry the original request
-  } else if (errorMessage.includes("network")) {
-    const detailedMessage = "Network Error: Please check your internet connection and try again.";
-    console.error(detailedMessage);
-    await showToast({
-      style: Toast.Style.Failure,
-      title: "Network Error",
-      message: detailedMessage,
-    });
-  } else {
-    const detailedMessage = `Error: ${errorMessage}. Please try again or contact support if the problem persists.`;
-    console.error(detailedMessage);
-    await showToast({
-      style: Toast.Style.Failure,
-      title: "API Error",
-      message: detailedMessage,
-    });
-  }
+        // Retry after delay
+        await new Promise((resolve) => setTimeout(resolve, retryAfter));
+        return handleSubmit(query); // Retry the original request
+      } else if (errorMessage.includes("network")) {
+        const detailedMessage = "Network Error: Please check your internet connection and try again.";
+        console.error(detailedMessage);
+        await showToast({
+          style: Toast.Style.Failure,
+          title: "Network Error",
+          message: detailedMessage,
+        });
+      } else {
+        const detailedMessage = `Error: ${errorMessage}. Please try again or contact support if the problem persists.`;
+        console.error(detailedMessage);
+        await showToast({
+          style: Toast.Style.Failure,
+          title: "API Error",
+          message: detailedMessage,
+        });
+      }
 
-  // Update the error message in the UI
-  const errorMessageContent = `Error: ${errorMessage}`;
-  setMessages((prevMessages) =>
-    prevMessages.map((msg) =>
-      msg.timestamp === assistantMessageId
-        ? { ...msg, role: "error", content: errorMessageContent }
-        : msg,
-    ),
-  );
-  setStreamCounter((c) => c + 1);
+      // Update the error message in the UI
+      const errorMessageContent = `Error: ${errorMessage}`;
+      setMessages((prevMessages) =>
+        prevMessages.map((msg) =>
+          msg.timestamp === assistantMessageId ? { ...msg, role: "error", content: errorMessageContent } : msg,
+        ),
+      );
+      setStreamCounter((c) => c + 1);
     } finally {
       setIsLoading(false);
       console.log("handleSubmit finished.");
@@ -337,9 +340,7 @@ ${formattedContent}
 
   if (!preferences.apiKey) {
     return (
-      <Detail
-        markdown="## API Key Not Set 🔑\n\nPlease set your API key for the selected provider in the extension preferences (⌘ + ,) to use this command."
-      />
+      <Detail markdown="## API Key Not Set 🔑\n\nPlease set your API key for the selected provider in the extension preferences (⌘ + ,) to use this command." />
     );
   }
 
